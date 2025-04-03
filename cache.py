@@ -36,58 +36,57 @@ class CacheLevel(Level):
         block_address = self._calculate_block_address(address)
 
         if tag in self.cache[index]:
-            self.report_hit('R' if operation == 'R' else 'W', address)
+            self.report_hit(operation, address)
             if operation == 'W':
                 self.dirty_bits[index].add(block_address)
             if self.eviction_policy == 'LRU':
                 self.cache[index].move_to_end(tag)
             return 
-        
-        self.report_miss('R' if operation == 'R' else 'W', address)
-        
+
+        self.report_miss(operation, address)
+
+        if len(self.cache[index]) >= self.associativity:
+            self.evict(index)
+
         if self.higher_level:
             self.higher_level.access('R', address)
         else:
             self.report_hit('R', address)
-        
-        if len(self.cache[index]) >= self.associativity:
-            self.evict(index)
-        
+
         self.cache[index][tag] = block_address
         if operation == 'W':
             self.dirty_bits[index].add(block_address)
 
     def evict(self, cache_index):
-        """
-        Select a victim block in the given way provided this level's eviction policy. Calculate its block address and
-        then invalidate said block.
-        """
-        # select a victim block in the set provided the eviction policy (FIFO | LRU | MRU)
-        victim_block_tag = None  # todo
+        if not self.cache[cache_index]:
+            return
 
-        if self.eviction_policy == 'FIFO':
-            victim_block_tag, _ = self.cache[cache_index].popitem(last=False)
-        elif self.eviction_policy == 'LRU':
+        victim_block_tag = None  
+
+        if self.eviction_policy == 'FIFO' or self.eviction_policy == 'LRU':
             victim_block_tag, _ = self.cache[cache_index].popitem(last=False)
         elif self.eviction_policy == 'MRU':
             victim_block_tag, _ = self.cache[cache_index].popitem(last=True)
 
-        # invalidate the block
-        evicted_block = self._calculate_block_address_from_tag_index(victim_block_tag, cache_index)
-        self.invalidate(evicted_block)
+        victim_block_addr = self._calculate_block_address_from_tag_index(victim_block_tag, cache_index)
+
+        if victim_block_addr in self.dirty_bits[cache_index]:
+            self.report_writeback(victim_block_addr)
+            if self.higher_level:
+                self.higher_level.access('W', victim_block_addr)
+            self.dirty_bits[cache_index].remove(victim_block_addr)
+
+        self.report_eviction(victim_block_addr)
+
+        if self.higher_level:
+            self.higher_level.invalidate(victim_block_addr)
+
+        self.invalidate(victim_block_addr)
 
     def invalidate(self, block_address):
-        """
-        Invalidate the block given by block address. If the block is not in this level, then we know it is not in
-        lower levels. If it is in this level, then we need to invalidate lower levels first since they may be dirty.
-        Once all lower levels have been invalidated, we need to check if our level is dirty, and if it is, perform a
-        writeback and report that. Finally, once all lower levels have been invalidated we can remove the block from
-        our level and report the eviction.
-        """
         index = self._calculate_index(block_address)
         tag = self._calculate_tag(block_address)
 
         if tag in self.cache[index]:
             del self.cache[index][tag]
             self.dirty_bits[index].discard(block_address)
-
